@@ -1,108 +1,117 @@
 from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, Any, Optional
-
 import pandas as pd
 import yfinance as yf
+from datetime import datetime, timedelta
 
 
-@dataclass
-class StockDataBundle:
-    ticker: str
-    info: Dict[str, Any]
-    history: pd.DataFrame
-    financials: Optional[pd.DataFrame]
-    balance_sheet: Optional[pd.DataFrame]
-    cashflow: Optional[pd.DataFrame]
-
-
-def _clean_history(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df.reset_index()
-    if "Date" not in df.columns and "Datetime" in df.columns:
-        df = df.rename(columns={"Datetime": "Date"})
-    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-    required = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
-    for col in required:
-        if col not in df.columns:
-            df[col] = pd.NA
-    df = df[["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"]].dropna(subset=["Close"])
-    df = df.sort_values("Date").reset_index(drop=True)
+def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
     return df
 
 
-@pd.api.extensions.register_dataframe_accessor("safe")
-class SafeAccessor:
-    def __init__(self, pandas_obj):
-        self._obj = pandas_obj
-
-    def latest_value(self, row_name: str):
-        if self._obj is None or self._obj.empty:
-            return None
-        if row_name not in self._obj.index:
-            return None
-        series = self._obj.loc[row_name].dropna()
-        if series.empty:
-            return None
-        return series.iloc[0]
-
-
-def fetch_stock_bundle(ticker: str, period: str = "10y") -> StockDataBundle:
+def fetch_stock_data(ticker: str, years: int = 10) -> pd.DataFrame:
     ticker = ticker.strip().upper()
-    if not ticker:
-        raise ValueError("Please enter a valid ticker symbol.")
+    end = datetime.today()
+    start = end - timedelta(days=365 * years + 20)
+    df = yf.download(ticker, start=start, end=end, auto_adjust=False, progress=False, threads=False)
+    df = _flatten_columns(df)
+    if df is None or df.empty:
+        raise ValueError(f"No price data found for {ticker}. Check ticker symbol/exchange suffix.")
+    df = df.reset_index()
+    if "Date" not in df.columns:
+        df.rename(columns={df.columns[0]: "Date"}, inplace=True)
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns from market data: {missing}")
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df.dropna(subset=["Close"]).sort_values("Date").reset_index(drop=True)
+    return df
 
-    stock = yf.Ticker(ticker)
-    hist = _clean_history(stock.history(period=period, auto_adjust=False))
-    if hist.empty:
-        raise ValueError(f"No historical data found for ticker '{ticker}'. Try exchange suffixes such as .NS, .BO, .L, .TO etc.")
 
+def fetch_single_series(ticker: str, years: int = 10, name: str | None = None) -> pd.DataFrame:
+    end = datetime.today()
+    start = end - timedelta(days=365 * years + 20)
+    df = yf.download(ticker, start=start, end=end, progress=False, threads=False, auto_adjust=False)
+    df = _flatten_columns(df)
+    if df is None or df.empty or "Close" not in df.columns:
+        return pd.DataFrame(columns=["Date", name or ticker])
+    out = df.reset_index()[["Date", "Close"]].dropna()
+    out["Date"] = pd.to_datetime(out["Date"])
+    out.rename(columns={"Close": name or ticker}, inplace=True)
+    return out
+
+
+def infer_market_universe(ticker: str) -> dict:
+    t = ticker.upper()
+    if t.endswith(".NS") or t.endswith(".BO"):
+        return {
+            "benchmark": "^NSEI",
+            "benchmark_name": "NIFTY 50",
+            "vix": "^INDIAVIX",
+            "currency": "INR=X",
+            "currency_name": "USD/INR",
+            "yield": "^TNX",
+            "yield_name": "US 10Y Yield",
+            "crude": "CL=F",
+            "crude_name": "Crude Oil",
+            "gold": "GC=F",
+            "gold_name": "Gold",
+        }
+    return {
+        "benchmark": "^GSPC",
+        "benchmark_name": "S&P 500",
+        "vix": "^VIX",
+        "currency": "DX-Y.NYB",
+        "currency_name": "US Dollar Index",
+        "yield": "^TNX",
+        "yield_name": "US 10Y Yield",
+        "crude": "CL=F",
+        "crude_name": "Crude Oil",
+        "gold": "GC=F",
+        "gold_name": "Gold",
+    }
+
+
+def fetch_market_macro_data(ticker: str, years: int = 10) -> pd.DataFrame:
+    uni = infer_market_universe(ticker)
+    frames = []
+    for key in ["benchmark", "vix", "currency", "yield", "crude", "gold"]:
+        frames.append(fetch_single_series(uni[key], years=years, name=key))
+    if not frames:
+        return pd.DataFrame()
+    base = frames[0]
+    for f in frames[1:]:
+        base = pd.merge(base, f, on="Date", how="outer")
+    base = base.sort_values("Date").ffill().dropna(how="all")
+    return base
+
+
+def fetch_company_profile(ticker: str) -> dict:
     try:
-        info = stock.info or {}
+        tk = yf.Ticker(ticker)
+        info = tk.info or {}
     except Exception:
         info = {}
-
-    def safe_frame(fetcher):
-        try:
-            df = fetcher()
-            return df if isinstance(df, pd.DataFrame) and not df.empty else None
-        except Exception:
-            return None
-
-    return StockDataBundle(
-        ticker=ticker,
-        info=info,
-        history=hist,
-        financials=safe_frame(lambda: stock.financials),
-        balance_sheet=safe_frame(lambda: stock.balance_sheet),
-        cashflow=safe_frame(lambda: stock.cashflow),
-    )
+    fields = [
+        "longName", "sector", "industry", "marketCap", "trailingPE", "forwardPE",
+        "priceToBook", "returnOnEquity", "debtToEquity", "profitMargins", "operatingMargins",
+        "revenueGrowth", "earningsGrowth", "dividendYield", "beta", "currentPrice",
+        "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "averageVolume", "recommendationKey"
+    ]
+    return {k: info.get(k) for k in fields}
 
 
-def get_company_snapshot(bundle: StockDataBundle) -> Dict[str, Any]:
-    info = bundle.info or {}
-    hist = bundle.history
-    last = hist.iloc[-1]
-    prev_close = hist.iloc[-2]["Close"] if len(hist) > 1 else last["Close"]
-    day_change = ((last["Close"] - prev_close) / prev_close) * 100 if prev_close else 0
-    return {
-        "ticker": bundle.ticker,
-        "name": info.get("longName") or info.get("shortName") or bundle.ticker,
-        "sector": info.get("sector", "N/A"),
-        "industry": info.get("industry", "N/A"),
-        "currency": info.get("currency", ""),
-        "current_price": float(last["Close"]),
-        "day_change_pct": float(day_change),
-        "market_cap": info.get("marketCap"),
-        "trailing_pe": info.get("trailingPE"),
-        "forward_pe": info.get("forwardPE"),
-        "price_to_book": info.get("priceToBook"),
-        "dividend_yield": info.get("dividendYield"),
-        "beta": info.get("beta"),
-        "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
-        "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
-        "analysis_date": datetime.utcnow().strftime("%Y-%m-%d"),
-    }
+def fetch_news(ticker: str, limit: int = 10) -> list[dict]:
+    try:
+        news = yf.Ticker(ticker).news or []
+    except Exception:
+        news = []
+    clean = []
+    for item in news[:limit]:
+        title = item.get("title") or item.get("content", {}).get("title") or ""
+        publisher = item.get("publisher") or item.get("content", {}).get("provider", {}).get("displayName") or ""
+        link = item.get("link") or item.get("content", {}).get("canonicalUrl", {}).get("url") or ""
+        clean.append({"title": title, "publisher": publisher, "link": link})
+    return clean

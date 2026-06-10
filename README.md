@@ -1,70 +1,42 @@
-# Share Trading Analysis Platform - Streamlit MVP
+# Share Trading Analysis Platform - MVP v3
 
-This is a beginner-friendly Streamlit app for educational stock analysis.
+This version expands the MVP from technical-only analysis to a multi-factor framework.
 
-## Files required at the top level of GitHub repository
+## What is included
 
-Your GitHub repository should look exactly like this:
+- 10-year stock data fetch using yfinance
+- Technical indicators: moving averages, RSI, MACD, volume, volatility, support/resistance
+- Fundamental scoring using available yfinance company metrics
+- Market/macro proxy scoring using benchmark index, VIX, yield, crude, currency, gold
+- News sentiment proxy from recent yfinance headlines
+- Weighted Buy/Hold/Sell recommendation
+- Price driver table showing prominent positive/negative factors
+- Future value range: 1M, 3M, 6M, 12M
+- Adaptive walk-forward backtesting using Random Forest
+- In-app chatbot to ask questions about the current analysis
 
-```text
+## Deployment
+
+Upload the contents of this folder to GitHub:
+
+- app.py
+- requirements.txt
+- README.md
+- modules folder
+
+Then deploy on Streamlit Community Cloud with main file path:
+
 app.py
-requirements.txt
-README.md
-modules/
-```
 
-Inside `modules/`, you should see Python files such as `data_fetcher.py`, `technical_analysis.py`, `recommendation_engine.py`, etc.
+## Important note on accuracy
 
-## Deploy on Streamlit Community Cloud
-
-1. Upload all files to GitHub.
-2. Go to Streamlit Community Cloud.
-3. Click **Create app** / **New app**.
-4. Select your GitHub repository.
-5. Branch: `main`.
-6. Main file path: `app.py`.
-7. Open **Advanced settings** and select Python `3.11` or `3.12` if available.
-8. Click **Deploy**.
-
-## If you get "Server not responding"
-
-1. Open your Streamlit app page.
-2. Click **Manage app** in the lower-right corner.
-3. Click **Logs**.
-4. Check the latest red error message.
-5. Common fixes:
-   - Make sure `requirements.txt` is uploaded at the same level as `app.py`.
-   - Make sure the `modules` folder is uploaded.
-   - In Streamlit Advanced settings, select Python 3.11 or 3.12.
-   - Reboot the app after changes.
+The app includes a model that learns from historical technical and market/macro features and performs walk-forward testing. However, 95% accuracy cannot be guaranteed in real markets. The app reports actual achieved accuracy for the selected ticker and horizon.
 
 ## Example tickers
 
-US stocks:
-
-```text
-AAPL
-MSFT
-TSLA
-NVDA
-```
-
-Indian NSE stocks:
-
-```text
-RELIANCE.NS
-TCS.NS
-HDFCBANK.NS
-INFY.NS
-```
-
-## Run locally, optional
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+US: AAPL, MSFT, TSLA, NVDA
+India: RELIANCE.NS, TCS.NS, HDFCBANK.NS, INFY.NS
 
 ## Disclaimer
 
-This app is for educational and research use only. It is not financial advice. Stock market predictions can be wrong.
+This tool is for education and analytical exploration only. It is not financial advice.

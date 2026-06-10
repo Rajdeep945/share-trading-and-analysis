@@ -1,1 +1,0 @@
-# Share Trading Platform modules

@@ -1,132 +1,79 @@
 from __future__ import annotations
-
-from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 
 
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     data = df.copy()
-    close = data["Close"]
-
-    for window in [20, 50, 100, 200]:
-        data[f"SMA_{window}"] = close.rolling(window).mean()
-
+    close = data["Close"].astype(float)
+    data["Return_1D"] = close.pct_change()
+    data["Return_21D"] = close.pct_change(21)
+    data["Return_63D"] = close.pct_change(63)
+    data["SMA_20"] = close.rolling(20).mean()
+    data["SMA_50"] = close.rolling(50).mean()
+    data["SMA_100"] = close.rolling(100).mean()
+    data["SMA_200"] = close.rolling(200).mean()
     data["EMA_12"] = close.ewm(span=12, adjust=False).mean()
     data["EMA_26"] = close.ewm(span=26, adjust=False).mean()
     data["MACD"] = data["EMA_12"] - data["EMA_26"]
-    data["MACD_SIGNAL"] = data["MACD"].ewm(span=9, adjust=False).mean()
-    data["MACD_HIST"] = data["MACD"] - data["MACD_SIGNAL"]
-
+    data["MACD_Signal"] = data["MACD"].ewm(span=9, adjust=False).mean()
+    data["MACD_Hist"] = data["MACD"] - data["MACD_Signal"]
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     data["RSI"] = 100 - (100 / (1 + rs))
-
-    data["BB_MID"] = close.rolling(20).mean()
-    data["BB_STD"] = close.rolling(20).std()
-    data["BB_UPPER"] = data["BB_MID"] + 2 * data["BB_STD"]
-    data["BB_LOWER"] = data["BB_MID"] - 2 * data["BB_STD"]
-
-    data["DAILY_RETURN"] = close.pct_change()
-    data["VOLATILITY_30D"] = data["DAILY_RETURN"].rolling(30).std() * np.sqrt(252)
-    data["VOLUME_SMA_20"] = data["Volume"].rolling(20).mean()
-    data["MOMENTUM_3M"] = close.pct_change(63)
-    data["MOMENTUM_6M"] = close.pct_change(126)
-    data["MOMENTUM_12M"] = close.pct_change(252)
-
+    ma20 = data["SMA_20"]
+    std20 = close.rolling(20).std()
+    data["BB_Upper"] = ma20 + 2 * std20
+    data["BB_Lower"] = ma20 - 2 * std20
+    data["Volatility_21D"] = data["Return_1D"].rolling(21).std() * np.sqrt(252)
+    data["Volume_SMA_20"] = data["Volume"].rolling(20).mean()
+    data["Volume_Ratio"] = data["Volume"] / data["Volume_SMA_20"]
+    data["Support_60D"] = data["Low"].rolling(60).min()
+    data["Resistance_60D"] = data["High"].rolling(60).max()
     return data
 
 
-def support_resistance(df: pd.DataFrame, lookback: int = 180) -> Tuple[float, float]:
-    recent = df.tail(lookback)
-    support = float(recent["Low"].quantile(0.10))
-    resistance = float(recent["High"].quantile(0.90))
-    return support, resistance
-
-
-def technical_score(df: pd.DataFrame) -> Dict:
-    data = add_indicators(df).dropna().copy()
-    if data.empty:
-        return {"score": 50, "trend": "Neutral", "signals": ["Insufficient indicator history"], "support": None, "resistance": None, "indicator_data": add_indicators(df)}
-
-    latest = data.iloc[-1]
+def latest_technical_score(data: pd.DataFrame) -> tuple[int, list[dict]]:
+    row = data.dropna(subset=["Close"]).iloc[-1]
     score = 50
-    signals = []
+    factors = []
 
-    price = latest["Close"]
-    sma20 = latest["SMA_20"]
-    sma50 = latest["SMA_50"]
-    sma200 = latest["SMA_200"]
-    rsi = latest["RSI"]
-    macd = latest["MACD"]
-    macd_signal = latest["MACD_SIGNAL"]
-    vol = latest["Volume"]
-    vol_sma = latest["VOLUME_SMA_20"]
+    def add(name, impact, direction, explanation):
+        factors.append({"Factor": name, "Impact": impact, "Direction": direction, "Explanation": explanation})
 
-    if price > sma20:
-        score += 6; signals.append("Price is above 20-day moving average")
-    else:
-        score -= 6; signals.append("Price is below 20-day moving average")
+    close = row["Close"]
+    for ma, pts in [("SMA_20", 6), ("SMA_50", 8), ("SMA_100", 6), ("SMA_200", 10)]:
+        val = row.get(ma)
+        if pd.notna(val):
+            if close > val:
+                score += pts
+                add(f"Price above {ma}", pts, "Positive", f"Close is above {ma}, indicating upward trend support.")
+            else:
+                score -= pts
+                add(f"Price below {ma}", -pts, "Negative", f"Close is below {ma}, indicating trend weakness.")
 
-    if price > sma50:
-        score += 8; signals.append("Price is above 50-day moving average")
-    else:
-        score -= 8; signals.append("Price is below 50-day moving average")
+    rsi = row.get("RSI")
+    if pd.notna(rsi):
+        if rsi < 30:
+            score += 8; add("RSI oversold", 8, "Positive", "RSI below 30 can signal oversold rebound potential.")
+        elif rsi > 70:
+            score -= 8; add("RSI overbought", -8, "Negative", "RSI above 70 can signal short-term overheating.")
+        elif 45 <= rsi <= 65:
+            score += 5; add("RSI healthy", 5, "Positive", "RSI is in a constructive momentum zone.")
 
-    if price > sma200:
-        score += 12; signals.append("Long-term trend is positive: price above 200-day moving average")
-    else:
-        score -= 12; signals.append("Long-term trend is weak: price below 200-day moving average")
+    if pd.notna(row.get("MACD")) and pd.notna(row.get("MACD_Signal")):
+        if row["MACD"] > row["MACD_Signal"]:
+            score += 9; add("MACD bullish", 9, "Positive", "MACD is above signal line.")
+        else:
+            score -= 9; add("MACD bearish", -9, "Negative", "MACD is below signal line.")
 
-    if sma50 > sma200:
-        score += 8; signals.append("50-day average is above 200-day average")
-    else:
-        score -= 8; signals.append("50-day average is below 200-day average")
+    if pd.notna(row.get("Volume_Ratio")):
+        if row["Volume_Ratio"] > 1.3 and row.get("Return_21D", 0) > 0:
+            score += 5; add("Volume confirms rise", 5, "Positive", "Rising price with above-average volume.")
+        elif row["Volume_Ratio"] > 1.3 and row.get("Return_21D", 0) < 0:
+            score -= 5; add("Volume confirms fall", -5, "Negative", "Falling price with above-average volume.")
 
-    if macd > macd_signal:
-        score += 7; signals.append("MACD is bullish")
-    else:
-        score -= 7; signals.append("MACD is bearish")
-
-    if rsi < 30:
-        score += 5; signals.append("RSI is oversold, possible rebound zone")
-    elif 30 <= rsi <= 70:
-        score += 5; signals.append("RSI is in a healthy range")
-    else:
-        score -= 8; signals.append("RSI is overbought, short-term caution")
-
-    if pd.notna(vol_sma) and vol > vol_sma:
-        score += 4; signals.append("Volume is above 20-day average")
-    else:
-        score -= 2; signals.append("Volume confirmation is weak")
-
-    for col, label in [("MOMENTUM_3M", "3-month"), ("MOMENTUM_6M", "6-month"), ("MOMENTUM_12M", "12-month")]:
-        val = latest.get(col)
-        if pd.notna(val) and val > 0:
-            score += 4; signals.append(f"{label} momentum is positive")
-        elif pd.notna(val):
-            score -= 4; signals.append(f"{label} momentum is negative")
-
-    score = max(0, min(100, round(score, 1)))
-    if score >= 70:
-        trend = "Bullish"
-    elif score >= 45:
-        trend = "Neutral / Sideways"
-    else:
-        trend = "Bearish"
-
-    support, resistance = support_resistance(data)
-    return {
-        "score": score,
-        "trend": trend,
-        "signals": signals,
-        "support": support,
-        "resistance": resistance,
-        "rsi": float(rsi),
-        "macd": float(macd),
-        "macd_signal": float(macd_signal),
-        "volatility_30d": float(latest["VOLATILITY_30D"]) if pd.notna(latest["VOLATILITY_30D"]) else None,
-        "indicator_data": add_indicators(df),
-    }
+    score = int(max(0, min(100, score)))
+    return score, factors
